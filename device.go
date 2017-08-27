@@ -93,7 +93,7 @@ func (h *HemtjanstDevice) init() {
 			return
 		}
 		if h.group.Members == nil || len(h.group.Members) != len(h.members) {
-			log.Printf("[%s] Not enough members yet (%d/%d)", h.Topic, len(h.members), len(h.group.Members))
+			//log.Printf("[%s] Not enough members yet (%d/%d)", h.Topic, len(h.members), len(h.group.Members))
 			return
 		}
 

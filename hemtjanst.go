@@ -3,7 +3,7 @@ package sladdlos
 import (
 	"github.com/hemtjanst/hemtjanst/messaging"
 	"github.com/hemtjanst/sladdlos/tradfri"
-	"log"
+	//"log"
 	"strconv"
 	"sync"
 	//"time"
@@ -115,19 +115,19 @@ func (h *HemtjanstClient) ensureDevices() {
 		var owner *tradfri.Group
 		if grpId, ok := ownerGroup[light.GetInstanceID()]; ok {
 			if owner, ok = h.groups[grpId]; !ok {
-				log.Printf("[%s] Owner group not initialized, continuing", topic)
+				//log.Printf("[%s] Owner group not initialized, continuing", topic)
 				continue
 			}
 		} else {
 			// Wait until we have the group
-			log.Printf("[%s] Owner group not found yet, continuing", topic)
+			//log.Printf("[%s] Owner group not found yet, continuing", topic)
 			continue
 		}
 		ownerTopic := topicFor("grp", owner)
 		var ownerDev *HemtjanstDevice
 		var ok bool
 		if ownerDev, ok = h.devices[ownerTopic]; !ok {
-			log.Printf("[%s] Owner group not found as %s", topic, ownerTopic)
+			//log.Printf("[%s] Owner group not found as %s", topic, ownerTopic)
 			continue
 		}
 
