@@ -14,6 +14,12 @@
   revision = "242d1a706c197680777f1adabab4598b79305e09"
 
 [[projects]]
+  branch = "master"
+  name = "github.com/lucasb-eyer/go-colorful"
+  packages = ["."]
+  revision = "231272389856c976b7500c4fffcc52ddf06ff4eb"
+
+[[projects]]
   name = "github.com/satori/go.uuid"
   packages = ["."]
   revision = "879c5887cd475cd7864858769793b2ceb0d44feb"
@@ -28,6 +34,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "259190e4d918e3f5aee48a615c17ff4766f5e3bf08a6550100c98c5978e1aaef"
+  inputs-digest = "b16bdc0aedcd3f401c656e94e9d8430e3fa2f85c63a4231b279036c8bddd339a"
   solver-name = "gps-cdcl"
   solver-version = 1

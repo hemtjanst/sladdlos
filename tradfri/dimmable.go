@@ -44,8 +44,8 @@ func calcDim(dim int) uint8 {
 		newDim = dim*2 - 11
 	} else {
 		dimf := float64(dim-40)*3.1 + 69
-		if dimf > 255 {
-			newDim = 255
+		if dimf > 254 {
+			newDim = 254
 		} else {
 			newDim = int(dimf)
 		}

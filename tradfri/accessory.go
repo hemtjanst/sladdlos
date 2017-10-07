@@ -5,6 +5,7 @@ import (
 	"log"
 	"strconv"
 	"time"
+	"image/color"
 )
 
 type Accessory struct {
@@ -112,7 +113,7 @@ func (a *Accessory) SetName(name string) {
 	})
 }
 
-func (a *Accessory) SetColor(c string) {
+func (a *Accessory) SetColor(c color.Color) {
 	if !a.IsLight() {
 		return
 	}
@@ -121,14 +122,23 @@ func (a *Accessory) SetColor(c string) {
 	})
 }
 
+func (a *Accessory) SetColorTemp(c string) {
+	if !a.IsLight() {
+		return
+	}
+	a.updateLight(func(ch *Light) {
+		ch.SetColorTemp(c)
+	})
+}
+
 func (a *Accessory) SetColorCold() {
-	a.SetColor(Cold)
+	a.SetColorTemp(Cold)
 }
 
 func (a *Accessory) SetColorNormal() {
-	a.SetColor(Normal)
+	a.SetColorTemp(Normal)
 }
 
 func (a *Accessory) SetColorWarm() {
-	a.SetColor(Warm)
+	a.SetColorTemp(Warm)
 }

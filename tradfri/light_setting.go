@@ -1,6 +1,10 @@
 package tradfri
 
-import "strings"
+import (
+	"github.com/lucasb-eyer/go-colorful"
+	"image/color"
+	"strings"
+)
 
 const (
 	Cold    = "f5faf6"
@@ -26,7 +30,7 @@ type LightSetting struct {
 	Field5711 int `json:"5711,omitempty"`
 }
 
-func (l *LightSetting) SetColor(c string) {
+func (l *LightSetting) SetColorTemp(c string) {
 	switch strings.ToLower(c) {
 	case "cold", Cold:
 		l.Color = Cold
@@ -43,6 +47,17 @@ func (l *LightSetting) SetColor(c string) {
 	}
 }
 
+func (l *LightSetting) SetColor(color color.Color) {
+	var c colorful.Color
+	var ok bool
+	if c, ok = color.(colorful.Color); !ok {
+		c = colorful.MakeColor(color)
+	}
+	x, y, _ := c.Xyy()
+	l.ColorX = int(x*65535 + 0.5)
+	l.ColorY = int(y*65535 + 0.5)
+}
+
 func (l *LightSetting) GetColorName() string {
 	switch l.Color {
 	case Cold:
@@ -57,15 +72,15 @@ func (l *LightSetting) GetColorName() string {
 }
 
 func (l *LightSetting) SetColorCold() {
-	l.SetColor(Cold)
+	l.SetColorTemp(Cold)
 }
 
 func (l *LightSetting) SetColorNormal() {
-	l.SetColor(Normal)
+	l.SetColorTemp(Normal)
 }
 
 func (l *LightSetting) SetColorWarm() {
-	l.SetColor(Warm)
+	l.SetColorTemp(Warm)
 }
 
 func (l *LightSetting) HasColorTemperature() bool {

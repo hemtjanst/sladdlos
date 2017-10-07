@@ -1,27 +1,37 @@
 package sladdlos
 
 import (
+	"fmt"
 	"github.com/hemtjanst/hemtjanst/device"
 	"github.com/hemtjanst/hemtjanst/messaging"
 	"github.com/hemtjanst/sladdlos/tradfri"
+	"github.com/lucasb-eyer/go-colorful"
 	"log"
 	"strconv"
 	"strings"
 	"sync"
 )
 
+const (
+	lTypeNone = iota
+	lTypeTemp
+	lTypeRgb
+)
+
 type HemtjanstDevice struct {
 	sync.RWMutex
-	client    *HemtjanstClient
-	mqClient  messaging.PublishSubscriber
-	Topic     string
-	isRunning bool
-	isGroup   bool
-	accessory *tradfri.Accessory
-	members   []*HemtjanstDevice
-	group     *tradfri.Group
-	device    *device.Device
-	features  map[string]*device.Feature
+	client         *HemtjanstClient
+	mqClient       messaging.PublishSubscriber
+	Topic          string
+	isRunning      bool
+	isGroup        bool
+	accessory      *tradfri.Accessory
+	members        []*HemtjanstDevice
+	group          *tradfri.Group
+	device         *device.Device
+	features       map[string]*device.Feature
+	lastHue        *int
+	lastSaturation *int
 }
 
 func NewHemtjanstAccessory(client *HemtjanstClient, topic string, accessory *tradfri.Accessory, group *HemtjanstDevice) *HemtjanstDevice {
@@ -87,7 +97,8 @@ func (h *HemtjanstDevice) init() {
 		return
 	}
 	var dev *device.Device
-	hasColorTemp := false
+
+	lType := lTypeNone
 	if h.isGroup {
 		if h.group == nil {
 			return
@@ -109,9 +120,12 @@ func (h *HemtjanstDevice) init() {
 			if d.accessory != nil {
 				if l := d.accessory.Light(); l != nil {
 					if l.HasColorTemperature() {
-						hasColorTemp = true
-						break
+						lType = lTypeTemp
 					}
+				}
+				if d.accessory.DeviceInfo.IsRGBModel() {
+					lType = lTypeRgb
+					break
 				}
 			}
 		}
@@ -137,13 +151,24 @@ func (h *HemtjanstDevice) init() {
 		dev.LastWillID = h.client.Id
 
 		dev.AddFeature("reachable", &device.Feature{})
-		hasColorTemp = h.accessory.Light().HasColorTemperature()
+
+		if h.accessory.Light().HasColorTemperature() {
+			lType = lTypeTemp
+		}
+		if h.accessory.DeviceInfo.IsRGBModel() {
+			lType = lTypeRgb
+		}
 	}
 
 	dev.AddFeature("on", &device.Feature{})
 	dev.AddFeature("brightness", &device.Feature{})
-	if hasColorTemp {
+
+	switch lType {
+	case lTypeTemp:
 		dev.AddFeature("colorTemperature", &device.Feature{})
+	case lTypeRgb:
+		dev.AddFeature("hue", &device.Feature{})
+		dev.AddFeature("saturation", &device.Feature{})
 	}
 	if dev != nil {
 		h.isRunning = true
@@ -177,6 +202,7 @@ func (h *HemtjanstDevice) handleFeature(name string, ft *device.Feature) {
 		ft.OnSet(func(msg messaging.Message) {
 			h.onDeviceSet(ftName, string(msg.Payload()))
 		})
+		h.publish(ftName)
 	}
 }
 
@@ -210,15 +236,48 @@ func (h *HemtjanstDevice) onDeviceSet(feature string, newValue string) {
 				for _, m := range h.members {
 					if m.accessory != nil && m.accessory.Light() != nil {
 						if m.accessory.Light().HasColorTemperature() {
-							m.accessory.SetColor(newTemp)
+							m.accessory.SetColorTemp(newTemp)
 						}
 					}
 				}
 			} else if h.accessory != nil {
-				h.accessory.SetColor(newTemp)
+				h.accessory.SetColorTemp(newTemp)
 			}
 		}
+	case "hue":
+		if hue, err := strconv.Atoi(newValue); err == nil {
+			h.lastHue = &hue
+			h.updateColor()
+		}
+	case "saturation":
+		if saturation, err := strconv.Atoi(newValue); err == nil {
+			h.lastSaturation = &saturation
+			h.updateColor()
+		}
 	}
+}
+
+func (h *HemtjanstDevice) updateColor() {
+	if h.lastHue == nil || h.lastSaturation == nil {
+		return
+	}
+	hue := *h.lastHue
+	sat := *h.lastSaturation
+
+	newColor := colorful.Hsv(float64(hue), float64(sat)/100, float64(1))
+
+	if h.isGroup && h.group != nil {
+		for _, m := range h.members {
+			if m.accessory != nil && m.accessory.Light() != nil {
+				if m.accessory.DeviceInfo.IsRGBModel() {
+					m.accessory.SetColor(newColor)
+				}
+			}
+		}
+	} else if h.accessory != nil {
+		h.accessory.SetColor(newColor)
+	}
+
 }
 
 func (h *HemtjanstDevice) dimmable() *tradfri.Dimmable {
@@ -252,59 +311,83 @@ func (h *HemtjanstDevice) lightSetting() *tradfri.LightSetting {
 	return &l.LightSetting
 }
 
+func (h *HemtjanstDevice) publish(feature string) error {
+	switch feature {
+	case "on":
+		dim := h.dimmable()
+		if dim == nil {
+			return fmt.Errorf("Device doesn't support %s", feature)
+		}
+		val := "0"
+		if dim.IsOn() {
+			val = "1"
+		}
+		if ft, err := h.device.GetFeature("on"); err == nil && ft != nil {
+			return ft.Update(val)
+		}
+		return fmt.Errorf("Feature %s not found", feature)
+	case "brightness":
+		dim := h.dimmable()
+		if dim == nil {
+			return fmt.Errorf("Device doesn't support %s", feature)
+		}
+		newDim := dim.DimInt()
+		if ft, err := h.device.GetFeature("brightness"); err == nil && ft != nil {
+			return ft.Update(strconv.Itoa(newDim))
+		}
+		return fmt.Errorf("Feature %s not found", feature)
+	case "colorTemperature":
+		ls := h.lightSetting()
+		if ls == nil || !ls.HasColorTemperature() {
+			return fmt.Errorf("Device doesn't support %s", feature)
+		}
+		newVal := ""
+		switch ls.GetColorName() {
+		case "cold":
+			newVal = "111"
+		case "normal":
+			newVal = "222"
+		case "warm":
+			newVal = "400"
+		}
+		if ft, err := h.device.GetFeature("colorTemperature"); err == nil && ft != nil {
+			return ft.Update(newVal)
+		}
+		return fmt.Errorf("Feature %s not found", feature)
+	case "reachable":
+		if h.isGroup || h.accessory == nil {
+			return fmt.Errorf("Device doesn't support %s", feature)
+		}
+		val := "0"
+		if h.accessory.IsAlive() {
+			val = "1"
+		}
+		if ft, err := h.device.GetFeature("reachable"); err == nil && ft != nil {
+			return ft.Update(val)
+		}
+		return fmt.Errorf("Feature %s not found", feature)
+	}
+	return fmt.Errorf("Device doesn't support %s", feature)
+}
+
 func (h *HemtjanstDevice) onTradfriChange(change []*tradfri.ObservedChange) {
+	colorUpdated := false
 	for _, ch := range change {
 		log.Printf("[%s] %s changed from %v to %v", h.Topic, ch.Field, ch.OldValue, ch.NewValue)
 		switch ch.Field {
 		case "Dim":
-			dim := h.dimmable()
-			if dim == nil {
-				continue
-			}
-			newDim := dim.DimInt()
-			if ft, err := h.device.GetFeature("brightness"); err == nil && ft != nil {
-				ft.Update(strconv.Itoa(newDim))
-			}
+			h.publish("brightness")
 		case "On":
-			dim := h.dimmable()
-			if dim == nil {
-				continue
-			}
-			val := "0"
-			if dim.IsOn() {
-				val = "1"
-			}
-			if ft, err := h.device.GetFeature("on"); err == nil && ft != nil {
-				ft.Update(val)
-			}
-		case "Color":
-			ls := h.lightSetting()
-			if ls == nil {
-				continue
-			}
-			newVal := ""
-			switch ls.GetColorName() {
-			case "cold":
-				newVal = "111"
-			case "normal":
-				newVal = "222"
-			case "warm":
-				newVal = "400"
-			}
-			if ft, err := h.device.GetFeature("colorTemperature"); err == nil && ft != nil {
-				ft.Update(newVal)
+			h.publish("on")
+		case "Color", "ColorX", "ColorY":
+			if !colorUpdated {
+				colorUpdated = true
+				h.publish("colorTemperature")
+				h.publish("hue")
+				h.publish("saturation")
 			}
 		case "Alive":
-			if h.isGroup || h.accessory == nil {
-				continue
-			}
-			val := "0"
-			if h.accessory.IsAlive() {
-				val = "1"
-			}
-			if ft, err := h.device.GetFeature("reachable"); err == nil && ft != nil {
-				ft.Update(val)
-			}
+			h.publish("reachable")
 		}
 
 	}

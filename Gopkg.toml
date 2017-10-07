@@ -24,3 +24,7 @@
 [[constraint]]
   name = "github.com/eclipse/paho.mqtt.golang"
   branch = "master"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/lucasb-eyer/go-colorful"
