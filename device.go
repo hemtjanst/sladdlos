@@ -60,18 +60,25 @@ func NewHemtjanstGroup(client *HemtjanstClient, topic string, group *tradfri.Gro
 	return h
 }
 
+func (h *HemtjanstDevice) shouldSkip() bool {
+	return h.isGroup && h.client.SkipGroup ||
+		!h.isGroup && h.client.SkipBulb
+}
+
 func (h *HemtjanstDevice) OnConnect() {
-	h.subscribeFeatures()
+	if !h.shouldSkip() {
+		h.subscribeFeatures()
+	}
 }
 
 func (h *HemtjanstDevice) OnDiscover() {
-	if h.device != nil {
+	if h.device != nil && !h.shouldSkip() {
 		h.device.PublishMeta()
 	}
 }
 
 func (h *HemtjanstDevice) subscribeFeatures() {
-	if h.device != nil {
+	if h.device != nil && !h.shouldSkip() {
 		h.device.RLock()
 		defer h.device.RUnlock()
 		for k, v := range h.device.Features {
@@ -175,7 +182,7 @@ func (h *HemtjanstDevice) init() {
 		h.isRunning = true
 		h.device = dev
 		h.subscribeFeatures()
-		if h.client.Announce {
+		if h.client.Announce && !h.shouldSkip() {
 			h.device.PublishMeta()
 		}
 		if h.isGroup && h.group != nil {

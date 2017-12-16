@@ -18,6 +18,8 @@ import (
 var (
 	cleanUpHemtjanst = flag.Bool("hemtjanst.cleanup", false, "Clean up Hemtjänst MQTT Topics")
 	cleanUpTradfri   = flag.Bool("tradfri.cleanup", false, "Clean up Trådfri MQTT Topics")
+	skipGroup        = flag.Bool("skip-group", false, "Skip announcing Trådfri groups as lights")
+	skipBulb         = flag.Bool("skip-bulb", false, "Skip announcing Trådfri bulbs individually")
 )
 
 func main() {
@@ -28,6 +30,11 @@ func main() {
 		return
 	}
 
+	if *skipGroup && *skipBulb {
+		log.Print("-skip-group and -skip-bulb are mutually exclusive, pick one")
+		return
+	}
+
 	id := flagmqtt.NewUniqueIdentifier()
 
 	tr := transport.NewTransport(id)
@@ -35,6 +42,15 @@ func main() {
 	tr.SetTree(tree)
 
 	ht := sladdlos.NewHemtjanstClient(tree, id)
+
+	ht.SkipGroup = *skipGroup
+	if ht.SkipGroup {
+		log.Print("Skipping groups")
+	}
+	ht.SkipBulb = *skipBulb
+	if ht.SkipBulb {
+		log.Print("Skipping bulbs")
+	}
 
 	var messenger messaging.PublishSubscriber
 

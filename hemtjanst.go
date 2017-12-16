@@ -20,6 +20,8 @@ type HemtjanstClient struct {
 	MQTT         messaging.PublishSubscriber
 	Id           string
 	Announce     bool
+	SkipGroup    bool
+	SkipBulb     bool
 	tree         *tradfri.Tree
 	devices      map[string]*HemtjanstDevice
 	groups       map[int]*tradfri.Group
@@ -32,6 +34,8 @@ func NewHemtjanstClient(tree *tradfri.Tree, id string) *HemtjanstClient {
 	h := &HemtjanstClient{
 		tree:         tree,
 		Id:           id,
+		SkipBulb:     false,
+		SkipGroup:    false,
 		devices:      map[string]*HemtjanstDevice{},
 		newDevChan:   make(chan *tradfri.Accessory),
 		newGroupChan: make(chan *tradfri.Group),
