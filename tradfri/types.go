@@ -1,8 +1,8 @@
 package tradfri
 
 import (
-	"time"
 	"sync"
+	"time"
 )
 
 type DeviceType uint8
@@ -10,14 +10,15 @@ type YesNo uint8
 type UpdatePriority uint8
 
 const (
-	TypeRemote   DeviceType     = 0
-	TypeLight    DeviceType     = 2
-	No           YesNo          = 0
-	Yes          YesNo          = 1
-	PrioNormal   UpdatePriority = 0
-	PrioCritical UpdatePriority = 1
-	PrioRequired UpdatePriority = 2
-	PrioForced   UpdatePriority = 5
+	TypeRemote       DeviceType     = 0
+	TypeLight        DeviceType     = 2
+	TypeMotionSensor DeviceType     = 4
+	No               YesNo          = 0
+	Yes              YesNo          = 1
+	PrioNormal       UpdatePriority = 0
+	PrioCritical     UpdatePriority = 1
+	PrioRequired     UpdatePriority = 2
+	PrioForced       UpdatePriority = 5
 )
 
 type Instance interface {
