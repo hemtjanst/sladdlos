@@ -17,4 +17,4 @@ archive:
     - README.md
   format_overrides:
     - goos: windows
-format: zip
+      format: zip
