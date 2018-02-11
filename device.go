@@ -337,8 +337,8 @@ func (h *HemtjanstDevice) lightSetting() *tradfri.LightSetting {
 
 func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 	if h.isGroup {
-		min := math.MaxInt64
-		max := math.MinInt64
+		min := math.MaxInt32
+		max := math.MinInt32
 		var last string
 
 		for _, m := range h.members {
@@ -368,7 +368,7 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 			}
 			return "0", nil
 		case "brightness":
-			if max != math.MinInt64 {
+			if max != math.MinInt32 {
 				return strconv.Itoa(max), nil
 			}
 			return "0", nil
