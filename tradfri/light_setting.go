@@ -21,12 +21,12 @@ const (
 type LightSetting struct {
 	BaseType
 	Dimmable
-	Color  string `json:"5706,omitempty"`
-	ColorX int    `json:"5709,omitempty"`
-	ColorY int    `json:"5710,omitempty"`
+	Color      string `json:"5706,omitempty"`
+	Hue        int    `json:"5707,omitempty"`
+	Saturation int    `json:"5708,omitempty"`
+	ColorX     int    `json:"5709,omitempty"`
+	ColorY     int    `json:"5710,omitempty"`
 
-	Field5707 int `json:"5707,omitempty"`
-	Field5708 int `json:"5708,omitempty"`
 	Field5711 int `json:"5711,omitempty"`
 }
 
@@ -53,9 +53,21 @@ func (l *LightSetting) SetColor(color color.Color) {
 	if c, ok = color.(colorful.Color); !ok {
 		c = colorful.MakeColor(color)
 	}
-	x, y, _ := c.Xyy()
-	l.ColorX = int(x*65535 + 0.5)
-	l.ColorY = int(y*65535 + 0.5)
+	h, s, _ := c.Hsv()
+	l.Hue = int(h*(65535/360) + 0.5)
+	if l.Hue >= 65535 {
+		l.Hue = 65535
+	}
+	l.Saturation = int(s*65279 + 0.5)
+	if l.Saturation >= 65279 {
+		l.Saturation = 65279
+	}
+}
+
+func (l *LightSetting) GetColor() colorful.Color {
+	hue := float64(l.Hue) / (65535 / 360)
+	sat := float64(l.Saturation) / 65279
+	return colorful.Hsv(hue, sat, 1)
 }
 
 func (l *LightSetting) GetColorName() string {

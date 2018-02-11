@@ -7,6 +7,7 @@ import (
 	"github.com/hemtjanst/sladdlos/tradfri"
 	"github.com/lucasb-eyer/go-colorful"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,18 +60,25 @@ func NewHemtjanstGroup(client *HemtjanstClient, topic string, group *tradfri.Gro
 	return h
 }
 
+func (h *HemtjanstDevice) shouldSkip() bool {
+	return h.isGroup && h.client.SkipGroup ||
+		!h.isGroup && h.client.SkipBulb
+}
+
 func (h *HemtjanstDevice) OnConnect() {
-	h.subscribeFeatures()
+	if !h.shouldSkip() {
+		h.subscribeFeatures()
+	}
 }
 
 func (h *HemtjanstDevice) OnDiscover() {
-	if h.device != nil {
+	if h.device != nil && !h.shouldSkip() {
 		h.device.PublishMeta()
 	}
 }
 
 func (h *HemtjanstDevice) subscribeFeatures() {
-	if h.device != nil {
+	if h.device != nil && !h.shouldSkip() {
 		h.device.RLock()
 		defer h.device.RUnlock()
 		for k, v := range h.device.Features {
@@ -169,12 +177,13 @@ func (h *HemtjanstDevice) init() {
 	case lTypeRgb:
 		dev.AddFeature("hue", &device.Feature{})
 		dev.AddFeature("saturation", &device.Feature{})
+		dev.AddFeature("color", &device.Feature{})
 	}
 	if dev != nil {
 		h.isRunning = true
 		h.device = dev
 		h.subscribeFeatures()
-		if h.client.Announce {
+		if h.client.Announce && !h.shouldSkip() {
 			h.device.PublishMeta()
 		}
 		if h.isGroup && h.group != nil {
@@ -244,27 +253,42 @@ func (h *HemtjanstDevice) onDeviceSet(feature string, newValue string) {
 				h.accessory.SetColorTemp(newTemp)
 			}
 		}
+	case "color":
+		h.updateColor(newValue)
 	case "hue":
 		if hue, err := strconv.Atoi(newValue); err == nil {
 			h.lastHue = &hue
-			h.updateColor()
+			h.updateColor("")
 		}
 	case "saturation":
 		if saturation, err := strconv.Atoi(newValue); err == nil {
 			h.lastSaturation = &saturation
-			h.updateColor()
+			h.updateColor("")
 		}
 	}
 }
 
-func (h *HemtjanstDevice) updateColor() {
-	if h.lastHue == nil || h.lastSaturation == nil {
-		return
-	}
-	hue := *h.lastHue
-	sat := *h.lastSaturation
+func (h *HemtjanstDevice) updateColor(rgb string) {
+	var newColor colorful.Color
 
-	newColor := colorful.Hsv(float64(hue), float64(sat)/100, float64(1))
+	if rgb == "" {
+		if h.lastHue == nil || h.lastSaturation == nil {
+			return
+		}
+		hue := *h.lastHue
+		sat := *h.lastSaturation
+
+		newColor = colorful.Hsv(float64(hue), float64(sat)/100, float64(1))
+	} else {
+		if rgb[0] != '#' {
+			rgb = "#" + rgb
+		}
+		var err error
+		newColor, err = colorful.Hex(rgb)
+		if err != nil {
+			return
+		}
+	}
 
 	if h.isGroup && h.group != nil {
 		for _, m := range h.members {
@@ -311,63 +335,136 @@ func (h *HemtjanstDevice) lightSetting() *tradfri.LightSetting {
 	return &l.LightSetting
 }
 
-func (h *HemtjanstDevice) publish(feature string) error {
+func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
+	if h.isGroup {
+		min := math.MaxInt64
+		max := math.MinInt64
+		var last string
+
+		for _, m := range h.members {
+			val, err := m.featureVal(feature)
+			if err != nil {
+				continue
+			}
+			if val != "" {
+				last = val
+			}
+			ival, err := strconv.Atoi(val)
+			if err != nil {
+				continue
+			}
+			if ival < min {
+				min = ival
+			}
+			if ival > max {
+				max = ival
+			}
+		}
+
+		switch feature {
+		case "on":
+			if max == 1 {
+				return "1", nil
+			}
+			return "0", nil
+		case "brightness":
+			if max != math.MinInt64 {
+				return strconv.Itoa(max), nil
+			}
+			return "0", nil
+		case "colorTemperature":
+			return last, nil
+		case "reachable":
+			if min == 0 {
+				return "0", nil
+			}
+			return "1", nil
+		case "hue", "saturation", "color":
+			if last == "" {
+				return "", fmt.Errorf("device doesn't support %s", feature)
+			}
+			return last, nil
+		}
+	}
 	switch feature {
 	case "on":
 		dim := h.dimmable()
 		if dim == nil {
-			return fmt.Errorf("Device doesn't support %s", feature)
+			return "", fmt.Errorf("device doesn't support %s", feature)
 		}
-		val := "0"
 		if dim.IsOn() {
-			val = "1"
+			return "1", nil
 		}
-		if ft, err := h.device.GetFeature("on"); err == nil && ft != nil {
-			return ft.Update(val)
-		}
-		return fmt.Errorf("Feature %s not found", feature)
+		return "0", nil
 	case "brightness":
 		dim := h.dimmable()
 		if dim == nil {
-			return fmt.Errorf("Device doesn't support %s", feature)
+			return "", fmt.Errorf("device doesn't support %s", feature)
 		}
-		newDim := dim.DimInt()
-		if ft, err := h.device.GetFeature("brightness"); err == nil && ft != nil {
-			return ft.Update(strconv.Itoa(newDim))
-		}
-		return fmt.Errorf("Feature %s not found", feature)
+		return strconv.Itoa(dim.DimInt()), nil
 	case "colorTemperature":
 		ls := h.lightSetting()
 		if ls == nil || !ls.HasColorTemperature() {
-			return fmt.Errorf("Device doesn't support %s", feature)
+			return "", fmt.Errorf("device doesn't support %s", feature)
 		}
-		newVal := ""
 		switch ls.GetColorName() {
 		case "cold":
-			newVal = "111"
-		case "normal":
-			newVal = "222"
+			return "111", nil
 		case "warm":
-			newVal = "400"
+			return "400", nil
+		default:
+			return "222", nil
 		}
-		if ft, err := h.device.GetFeature("colorTemperature"); err == nil && ft != nil {
-			return ft.Update(newVal)
-		}
-		return fmt.Errorf("Feature %s not found", feature)
 	case "reachable":
 		if h.isGroup || h.accessory == nil {
-			return fmt.Errorf("Device doesn't support %s", feature)
+
 		}
-		val := "0"
 		if h.accessory.IsAlive() {
-			val = "1"
+			return "1", nil
 		}
-		if ft, err := h.device.GetFeature("reachable"); err == nil && ft != nil {
-			return ft.Update(val)
+		return "0", nil
+	case "hue":
+		ls := h.lightSetting()
+		if ls == nil {
+			return "", fmt.Errorf("device doesn't support %s", feature)
 		}
-		return fmt.Errorf("Feature %s not found", feature)
+		hue, _, _ := ls.GetColor().Hsv()
+		return strconv.Itoa(int(hue)), nil
+	case "saturation":
+		ls := h.lightSetting()
+		if ls == nil {
+			return "", fmt.Errorf("device doesn't support %s", feature)
+		}
+		_, sat, _ := ls.GetColor().Hsv()
+		return strconv.Itoa(int(sat * 100)), nil
+	case "color":
+		ls := h.lightSetting()
+		if ls == nil {
+			return "", fmt.Errorf("device doesn't support %s", feature)
+		}
+		return ls.GetColor().Hex(), nil
 	}
-	return fmt.Errorf("Device doesn't support %s", feature)
+	return "", fmt.Errorf("device doesn't support %s", feature)
+}
+
+func (h *HemtjanstDevice) publish(feature string) error {
+	var ft *device.Feature
+	var err error
+
+	if !h.isGroup && len(h.members) == 1 {
+		h.members[0].publish(feature)
+	}
+
+	if ft, err = h.device.GetFeature(feature); err != nil || ft == nil {
+		return fmt.Errorf("feature %s not found", feature)
+	}
+
+	newVal, err := h.featureVal(feature)
+	if err != nil {
+		return err
+	}
+	ft.Update(newVal)
+	return nil
 }
 
 func (h *HemtjanstDevice) onTradfriChange(change []*tradfri.ObservedChange) {
@@ -379,12 +476,13 @@ func (h *HemtjanstDevice) onTradfriChange(change []*tradfri.ObservedChange) {
 			h.publish("brightness")
 		case "On":
 			h.publish("on")
-		case "Color", "ColorX", "ColorY":
+		case "Color", "ColorX", "ColorY", "Hue", "Saturation":
 			if !colorUpdated {
 				colorUpdated = true
 				h.publish("colorTemperature")
 				h.publish("hue")
 				h.publish("saturation")
+				h.publish("color")
 			}
 		case "Alive":
 			h.publish("reachable")

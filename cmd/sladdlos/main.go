@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/eclipse/paho.mqtt.golang"
 	"github.com/hemtjanst/hemtjanst/messaging"
 	"github.com/hemtjanst/hemtjanst/messaging/flagmqtt"
 	"github.com/hemtjanst/sladdlos"
@@ -11,11 +11,29 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"strings"
 	"time"
+)
+
+var (
+	cleanUpHemtjanst = flag.Bool("hemtjanst.cleanup", false, "Clean up Hemtjänst MQTT Topics")
+	cleanUpTradfri   = flag.Bool("tradfri.cleanup", false, "Clean up Trådfri MQTT Topics")
+	skipGroup        = flag.Bool("skip-group", false, "Skip announcing Trådfri groups as lights")
+	skipBulb         = flag.Bool("skip-bulb", false, "Skip announcing Trådfri bulbs individually")
 )
 
 func main() {
 	flag.Parse()
+
+	if *cleanUpHemtjanst || *cleanUpTradfri {
+		clean()
+		return
+	}
+
+	if *skipGroup && *skipBulb {
+		log.Print("-skip-group and -skip-bulb are mutually exclusive, pick one")
+		return
+	}
 
 	id := flagmqtt.NewUniqueIdentifier()
 
@@ -24,6 +42,15 @@ func main() {
 	tr.SetTree(tree)
 
 	ht := sladdlos.NewHemtjanstClient(tree, id)
+
+	ht.SkipGroup = *skipGroup
+	if ht.SkipGroup {
+		log.Print("Skipping groups")
+	}
+	ht.SkipBulb = *skipBulb
+	if ht.SkipBulb {
+		log.Print("Skipping bulbs")
+	}
 
 	var messenger messaging.PublishSubscriber
 
@@ -82,4 +109,55 @@ func main() {
 	}
 
 	log.Fatal(h.ListenAndServe())
+}
+
+func clean() {
+	exit := make(chan bool)
+	id := flagmqtt.NewUniqueIdentifier()
+	mqClient, err := flagmqtt.NewPersistentMqtt(flagmqtt.ClientConfig{
+		ClientID: "sladdlos-cleaner-" + id,
+		OnConnectHandler: func(client mqtt.Client) {
+
+		},
+	})
+
+	log.Print("Connecting to MQTT")
+	token := mqClient.Connect()
+	token.Wait()
+	if token.Error() != nil {
+		log.Fatal(err)
+	}
+	log.Print("Connected")
+
+	if *cleanUpTradfri {
+		mqClient.Subscribe("tradfri-raw/#", 1, func(client mqtt.Client, message mqtt.Message) {
+			if message.Retained() {
+				log.Printf("Deleting contents of topic %s", message.Topic())
+				client.Publish(message.Topic(), 1, true, []byte{})
+			}
+		})
+	}
+
+	if *cleanUpHemtjanst {
+		mqClient.Subscribe("announce/light/+", 1, func(client mqtt.Client, message mqtt.Message) {
+			if message.Retained() {
+				sp := strings.Split(message.Topic(), "/")
+				if len(sp) == 3 && strings.Index(sp[2], "grp-") == 0 || strings.Index(sp[2], "bulb-") == 0 {
+					log.Printf("Deleting contents of topic %s", message.Topic())
+					client.Publish(message.Topic(), 1, true, []byte{})
+				}
+			}
+		})
+		mqClient.Subscribe("light/+/+/get", 1, func(client mqtt.Client, message mqtt.Message) {
+			if message.Retained() {
+				sp := strings.Split(message.Topic(), "/")
+				if len(sp) == 4 && strings.Index(sp[1], "grp-") == 0 || strings.Index(sp[1], "bulb-") == 0 {
+					log.Printf("Deleting contents of topic %s", message.Topic())
+					client.Publish(message.Topic(), 1, true, []byte{})
+				}
+			}
+		})
+	}
+
+	<-exit
 }
