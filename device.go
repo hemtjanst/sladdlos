@@ -177,6 +177,7 @@ func (h *HemtjanstDevice) init() {
 	case lTypeRgb:
 		dev.AddFeature("hue", &device.Feature{})
 		dev.AddFeature("saturation", &device.Feature{})
+		dev.AddFeature("color", &device.Feature{})
 	}
 	if dev != nil {
 		h.isRunning = true
@@ -252,27 +253,42 @@ func (h *HemtjanstDevice) onDeviceSet(feature string, newValue string) {
 				h.accessory.SetColorTemp(newTemp)
 			}
 		}
+	case "color":
+		h.updateColor(newValue)
 	case "hue":
 		if hue, err := strconv.Atoi(newValue); err == nil {
 			h.lastHue = &hue
-			h.updateColor()
+			h.updateColor("")
 		}
 	case "saturation":
 		if saturation, err := strconv.Atoi(newValue); err == nil {
 			h.lastSaturation = &saturation
-			h.updateColor()
+			h.updateColor("")
 		}
 	}
 }
 
-func (h *HemtjanstDevice) updateColor() {
-	if h.lastHue == nil || h.lastSaturation == nil {
-		return
-	}
-	hue := *h.lastHue
-	sat := *h.lastSaturation
+func (h *HemtjanstDevice) updateColor(rgb string) {
+	var newColor colorful.Color
 
-	newColor := colorful.Hsv(float64(hue), float64(sat)/100, float64(1))
+	if rgb == "" {
+		if h.lastHue == nil || h.lastSaturation == nil {
+			return
+		}
+		hue := *h.lastHue
+		sat := *h.lastSaturation
+
+		newColor = colorful.Hsv(float64(hue), float64(sat)/100, float64(1))
+	} else {
+		if rgb[0] != '#' {
+			rgb = "#" + rgb
+		}
+		var err error
+		newColor, err = colorful.Hex(rgb)
+		if err != nil {
+			return
+		}
+	}
 
 	if h.isGroup && h.group != nil {
 		for _, m := range h.members {
@@ -363,13 +379,18 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 				return "0", nil
 			}
 			return "1", nil
+		case "hue", "saturation", "color":
+			if last == "" {
+				return "", fmt.Errorf("device doesn't support %s", feature)
+			}
+			return last, nil
 		}
 	}
 	switch feature {
 	case "on":
 		dim := h.dimmable()
 		if dim == nil {
-			return "", fmt.Errorf("Device doesn't support %s", feature)
+			return "", fmt.Errorf("device doesn't support %s", feature)
 		}
 		if dim.IsOn() {
 			return "1", nil
@@ -378,13 +399,13 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 	case "brightness":
 		dim := h.dimmable()
 		if dim == nil {
-			return "", fmt.Errorf("Device doesn't support %s", feature)
+			return "", fmt.Errorf("device doesn't support %s", feature)
 		}
 		return strconv.Itoa(dim.DimInt()), nil
 	case "colorTemperature":
 		ls := h.lightSetting()
 		if ls == nil || !ls.HasColorTemperature() {
-			return "", fmt.Errorf("Device doesn't support %s", feature)
+			return "", fmt.Errorf("device doesn't support %s", feature)
 		}
 		switch ls.GetColorName() {
 		case "cold":
@@ -396,14 +417,34 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 		}
 	case "reachable":
 		if h.isGroup || h.accessory == nil {
-			return "", fmt.Errorf("Device doesn't support %s", feature)
+
 		}
 		if h.accessory.IsAlive() {
 			return "1", nil
 		}
 		return "0", nil
+	case "hue":
+		ls := h.lightSetting()
+		if ls == nil {
+			return "", fmt.Errorf("device doesn't support %s", feature)
+		}
+		hue, _, _ := ls.GetColor().Hsv()
+		return strconv.Itoa(int(hue)), nil
+	case "saturation":
+		ls := h.lightSetting()
+		if ls == nil {
+			return "", fmt.Errorf("device doesn't support %s", feature)
+		}
+		_, sat, _ := ls.GetColor().Hsv()
+		return strconv.Itoa(int(sat * 100)), nil
+	case "color":
+		ls := h.lightSetting()
+		if ls == nil {
+			return "", fmt.Errorf("device doesn't support %s", feature)
+		}
+		return ls.GetColor().Hex(), nil
 	}
-	return "", fmt.Errorf("Device doesn't support %s", feature)
+	return "", fmt.Errorf("device doesn't support %s", feature)
 }
 
 func (h *HemtjanstDevice) publish(feature string) error {
@@ -415,7 +456,7 @@ func (h *HemtjanstDevice) publish(feature string) error {
 	}
 
 	if ft, err = h.device.GetFeature(feature); err != nil || ft == nil {
-		return fmt.Errorf("Feature %s not found", feature)
+		return fmt.Errorf("feature %s not found", feature)
 	}
 
 	newVal, err := h.featureVal(feature)
@@ -435,12 +476,13 @@ func (h *HemtjanstDevice) onTradfriChange(change []*tradfri.ObservedChange) {
 			h.publish("brightness")
 		case "On":
 			h.publish("on")
-		case "Color", "ColorX", "ColorY":
+		case "Color", "ColorX", "ColorY", "Hue", "Saturation":
 			if !colorUpdated {
 				colorUpdated = true
 				h.publish("colorTemperature")
 				h.publish("hue")
 				h.publish("saturation")
+				h.publish("color")
 			}
 		case "Alive":
 			h.publish("reachable")
