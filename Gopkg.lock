@@ -8,10 +8,10 @@
   revision = "720ed1a92c623623f00233e4bcd8d513d6e2fbe7"
 
 [[projects]]
-  branch = "master"
   name = "github.com/hemtjanst/hemtjanst"
   packages = ["device","messaging","messaging/flagmqtt"]
-  revision = "242d1a706c197680777f1adabab4598b79305e09"
+  revision = "1df4763d62e5d753ebdbed799f5865b3df0d31ab"
+  version = "v0.3.2"
 
 [[projects]]
   branch = "master"
@@ -22,8 +22,8 @@
 [[projects]]
   name = "github.com/satori/go.uuid"
   packages = ["."]
-  revision = "879c5887cd475cd7864858769793b2ceb0d44feb"
-  version = "v1.1.0"
+  revision = "f58768cc1a7a7e77a3bd49e98cdd21419399b6a3"
+  version = "v1.2.0"
 
 [[projects]]
   branch = "master"
