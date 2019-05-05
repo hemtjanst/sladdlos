@@ -1,8 +1,8 @@
 package transport
 
 import (
-	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/hemtjanst/sladdlos/tradfri"
+	"hemtjan.st/sladdlos/tradfri"
+	"lib.hemtjan.st/transport/mqtt"
 	"log"
 	"strings"
 	"sync"
@@ -10,14 +10,15 @@ import (
 
 type Transport struct {
 	sync.RWMutex
-	client  mqtt.Client
+	client  mqtt.MQTT
 	id      string
 	tree    *tradfri.Tree
 	waiting map[string]chan *tradfriReply
 }
 
-func NewTransport(id string) *Transport {
+func NewTransport(mq mqtt.MQTT, id string) *Transport {
 	m := &Transport{
+		client:  mq,
 		id:      id,
 		waiting: map[string]chan *tradfriReply{},
 	}
@@ -40,36 +41,45 @@ func (t *Transport) SetTree(tree *tradfri.Tree) {
 	}
 }
 
-func (t *Transport) OnConnect(client mqtt.Client) {
-	t.Lock()
-	defer t.Unlock()
-	t.client = client
-	if t.tree != nil {
-		t.subscribe()
-	}
-}
-
-func (t *Transport) onMessage(c mqtt.Client, msg mqtt.Message) {
+func (t *Transport) onMessage(msg *mqtt.Packet) {
 	t.RLock()
 	defer t.RUnlock()
 	if t.tree == nil {
 		return
 	}
-	topic := strings.Split(msg.Topic(), "/")
+	topic := strings.Split(msg.TopicName, "/")
 	if len(topic) < 2 || topic[0] != "tradfri-raw" {
 		return
 	}
 	go func() {
-		err := t.tree.Populate(topic[1:], msg.Payload())
+		err := t.tree.Populate(topic[1:], msg.Payload)
 
 		if err != nil {
 			log.Print(err)
-			log.Printf("^- While parsing from %s: %s", msg.Topic(), string(msg.Payload()))
+			log.Printf("^- While parsing from %s: %s", msg.TopicName, string(msg.Payload))
 		}
 	}()
 }
 
 func (t *Transport) subscribe() {
-	t.client.Subscribe("tradfri-raw/#", 1, t.onMessage)
-	t.client.Subscribe("tradfri-reply/"+t.id, 1, t.onReply)
+	msgCh := t.client.SubscribeRaw("tradfri-raw/#")
+	rplCh := t.client.Subscribe("tradfri-reply/" + t.id)
+	go func() {
+		for {
+			select {
+			case msg, open := <-msgCh:
+				if !open {
+					return
+				}
+				t.onMessage(msg)
+			case rpl, open := <-rplCh:
+				if !open {
+					return
+				}
+				t.onReply(rpl)
+
+			}
+
+		}
+	}()
 }

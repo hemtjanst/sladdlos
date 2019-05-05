@@ -2,10 +2,11 @@ package sladdlos
 
 import (
 	"fmt"
-	"github.com/hemtjanst/hemtjanst/device"
-	"github.com/hemtjanst/hemtjanst/messaging"
-	"github.com/hemtjanst/sladdlos/tradfri"
 	"github.com/lucasb-eyer/go-colorful"
+	"hemtjan.st/sladdlos/tradfri"
+	"lib.hemtjan.st/client"
+	"lib.hemtjan.st/device"
+	"lib.hemtjan.st/feature"
 	"log"
 	"math"
 	"strconv"
@@ -22,15 +23,14 @@ const (
 type HemtjanstDevice struct {
 	sync.RWMutex
 	client         *HemtjanstClient
-	mqClient       messaging.PublishSubscriber
 	Topic          string
 	isRunning      bool
 	isGroup        bool
 	accessory      *tradfri.Accessory
 	members        []*HemtjanstDevice
 	group          *tradfri.Group
-	device         *device.Device
-	features       map[string]*device.Feature
+	device         client.Device
+	features       map[string]client.Feature
 	lastHue        *int
 	lastSaturation *int
 }
@@ -65,28 +65,6 @@ func (h *HemtjanstDevice) shouldSkip() bool {
 		!h.isGroup && h.client.SkipBulb
 }
 
-func (h *HemtjanstDevice) OnConnect() {
-	if !h.shouldSkip() {
-		h.subscribeFeatures()
-	}
-}
-
-func (h *HemtjanstDevice) OnDiscover() {
-	if h.device != nil && !h.shouldSkip() {
-		h.device.PublishMeta()
-	}
-}
-
-func (h *HemtjanstDevice) subscribeFeatures() {
-	if h.device != nil && !h.shouldSkip() {
-		h.device.RLock()
-		defer h.device.RUnlock()
-		for k, v := range h.device.Features {
-			h.handleFeature(k, v)
-		}
-	}
-}
-
 func (h *HemtjanstDevice) AddMember(member *HemtjanstDevice) {
 	h.Lock()
 	defer h.Unlock()
@@ -101,10 +79,10 @@ func (h *HemtjanstDevice) init() {
 	if h.isRunning {
 		return
 	}
-	if h.client == nil || h.client.MQTT == nil {
+	if h.client == nil {
 		return
 	}
-	var dev *device.Device
+	var dev *device.Info
 
 	lType := lTypeNone
 	if h.isGroup {
@@ -112,20 +90,31 @@ func (h *HemtjanstDevice) init() {
 			return
 		}
 		if h.group.Members == nil || len(h.group.Members) != len(h.members) {
-			//log.Printf("[%s] Not enough members yet (%d/%d)", h.Topic, len(h.members), len(h.group.Members))
 			return
 		}
 
-		dev = device.NewDevice(h.Topic, h.client.MQTT)
-		dev.Name = h.group.Name
-		dev.Type = "lightbulb"
-		dev.Manufacturer = "IKEA"
-		dev.Model = "Trådfri Group"
-		dev.SerialNumber = strconv.Itoa(h.group.GetInstanceID())
-		dev.LastWillID = h.client.Id
+		dev = &device.Info{
+			Topic:        h.Topic,
+			Name:         h.group.Name,
+			Manufacturer: "IKEA",
+			Model:        "Trådfri Group",
+			SerialNumber: strconv.Itoa(h.group.GetInstanceID()),
+			Features:     map[string]*feature.Info{},
+		}
+
+		hasLight := false
+		hasPlug := false
 
 		for _, d := range h.members {
 			if d.accessory != nil {
+				if d.accessory.IsLight() {
+					hasLight = true
+				} else {
+					if d.accessory.IsPlug() {
+						hasPlug = true
+					}
+					continue
+				}
 				if l := d.accessory.Light(); l != nil {
 					if l.HasColorTemperature() {
 						lType = lTypeTemp
@@ -137,6 +126,17 @@ func (h *HemtjanstDevice) init() {
 				}
 			}
 		}
+
+		if hasLight {
+			dev.Type = "lightbulb"
+			dev.Features["on"] = &feature.Info{}
+			dev.Features["brightness"] = &feature.Info{}
+		} else if hasPlug {
+			dev.Type = "outlet"
+			dev.Features["on"] = &feature.Info{}
+			dev.Features["outletInUse"] = &feature.Info{}
+		}
+
 	} else {
 		if h.members == nil || h.accessory == nil || len(h.members) == 0 {
 			return
@@ -146,72 +146,68 @@ func (h *HemtjanstDevice) init() {
 			return
 		}
 
-		if !h.accessory.IsLight() {
-			return
+		dev = &device.Info{
+			Topic:        h.Topic,
+			Name:         h.accessory.Name,
+			Manufacturer: h.accessory.DeviceInfo.Manufacturer,
+			Model:        h.accessory.DeviceInfo.Model,
+			SerialNumber: strconv.Itoa(h.accessory.GetInstanceID()),
+			Features:     map[string]*feature.Info{},
 		}
-
-		dev = device.NewDevice(h.Topic, h.client.MQTT)
-		dev.Name = owner.group.Name + ": " + h.accessory.Name
-		dev.Type = "lightbulb"
-		dev.Manufacturer = h.accessory.DeviceInfo.Manufacturer
-		dev.Model = h.accessory.DeviceInfo.Model
-		dev.SerialNumber = strconv.Itoa(h.accessory.GetInstanceID())
-		dev.LastWillID = h.client.Id
-
-		dev.AddFeature("reachable", &device.Feature{})
-
-		if h.accessory.Light().HasColorTemperature() {
-			lType = lTypeTemp
-		}
-		if h.accessory.DeviceInfo.IsRGBModel() {
-			lType = lTypeRgb
+		if h.accessory.IsLight() {
+			dev.Type = "lightbulb"
+			dev.Features["on"] = &feature.Info{}
+			dev.Features["brightness"] = &feature.Info{}
+			if h.accessory.Light().HasColorTemperature() {
+				lType = lTypeTemp
+			}
+			if h.accessory.DeviceInfo.IsRGBModel() {
+				lType = lTypeRgb
+			}
+		} else if h.accessory.IsPlug() {
+			dev.Type = "outlet"
+			dev.Features["on"] = &feature.Info{}
+			dev.Features["outletInUse"] = &feature.Info{}
 		}
 	}
-
-	dev.AddFeature("on", &device.Feature{})
-	dev.AddFeature("brightness", &device.Feature{})
 
 	switch lType {
 	case lTypeTemp:
-		dev.AddFeature("colorTemperature", &device.Feature{})
+		dev.Features["colorTemperature"] = &feature.Info{}
 	case lTypeRgb:
-		dev.AddFeature("hue", &device.Feature{})
-		dev.AddFeature("saturation", &device.Feature{})
-		dev.AddFeature("color", &device.Feature{})
+		dev.Features["hue"] = &feature.Info{}
+		dev.Features["saturation"] = &feature.Info{}
+		dev.Features["color"] = &feature.Info{}
 	}
-	if dev != nil {
-		h.isRunning = true
-		h.device = dev
-		h.subscribeFeatures()
-		if h.client.Announce && !h.shouldSkip() {
-			h.device.PublishMeta()
+
+	if dev.Type == "" {
+		log.Printf("Unsupported device: %+v", dev)
+		return
+	}
+
+	h.isRunning = true
+	var err error
+	if !h.shouldSkip() {
+		h.device, err = client.NewDevice(dev, h.client.transport)
+		if err != nil {
+			log.Printf("Error creating device: %s", err)
 		}
-		if h.isGroup && h.group != nil {
-			h.group.Observe(h.onTradfriChange)
-		} else if h.accessory != nil {
-			h.accessory.Observe(h.onTradfriChange)
+		for _, ft := range h.device.Features() {
+			ft := ft
+			_ = ft.OnSetFunc(func(val string) {
+				h.onDeviceSet(ft.Name(), val)
+			})
+			err := h.publish(ft.Name())
+			if err != nil {
+				log.Printf("Error publishing to %s: %s", ft.Name(), err)
+			}
 		}
 		log.Printf("[%s] Started", h.Topic)
 	}
-}
-
-func (h *HemtjanstDevice) handleFeature(name string, ft *device.Feature) {
-	if h.device == nil {
-		return
-	}
-	h.device.RLock()
-	defer h.device.RUnlock()
-
-	if h.device.Features == nil {
-		return
-	}
-
-	for k, ft := range h.device.Features {
-		ftName := k
-		ft.OnSet(func(msg messaging.Message) {
-			h.onDeviceSet(ftName, string(msg.Payload()))
-		})
-		h.publish(ftName)
+	if h.isGroup && h.group != nil {
+		h.group.Observe(h.onTradfriChange)
+	} else if h.accessory != nil {
+		h.accessory.Observe(h.onTradfriChange)
 	}
 }
 
@@ -321,6 +317,27 @@ func (h *HemtjanstDevice) dimmable() *tradfri.Dimmable {
 	return &l.Dimmable
 }
 
+func (h *HemtjanstDevice) onOff() *tradfri.OnOff {
+	if h.isGroup {
+		if h.group != nil {
+			return &h.group.OnOff
+		}
+		return nil
+	}
+	if h.accessory == nil {
+		return nil
+	}
+	l := h.accessory.Light()
+	if l == nil {
+		p := h.accessory.Plug()
+		if p == nil {
+			return nil
+		}
+		return &p.OnOff
+	}
+	return &l.OnOff
+}
+
 func (h *HemtjanstDevice) lightSetting() *tradfri.LightSetting {
 	if h.isGroup {
 		return nil
@@ -384,15 +401,18 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 				return "", fmt.Errorf("device doesn't support %s", feature)
 			}
 			return last, nil
+		case "outletInUse":
+			// Currently no way of detecting
+			return "1", nil
 		}
 	}
 	switch feature {
 	case "on":
-		dim := h.dimmable()
-		if dim == nil {
+		onoff := h.onOff()
+		if onoff == nil {
 			return "", fmt.Errorf("device doesn't support %s", feature)
 		}
-		if dim.IsOn() {
+		if onoff.IsOn() {
 			return "1", nil
 		}
 		return "0", nil
@@ -443,28 +463,29 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 			return "", fmt.Errorf("device doesn't support %s", feature)
 		}
 		return ls.GetColor().Hex(), nil
+	case "outletInUse":
+		// Currently no way of detecting
+		return "1", nil
 	}
 	return "", fmt.Errorf("device doesn't support %s", feature)
 }
 
 func (h *HemtjanstDevice) publish(feature string) error {
-	var ft *device.Feature
 	var err error
-
 	if !h.isGroup && len(h.members) == 1 {
-		h.members[0].publish(feature)
+		if err := h.members[0].publish(feature); err != nil {
+			return err
+		}
 	}
-
-	if ft, err = h.device.GetFeature(feature); err != nil || ft == nil {
-		return fmt.Errorf("feature %s not found", feature)
-	}
-
 	newVal, err := h.featureVal(feature)
 	if err != nil {
 		return err
 	}
-	ft.Update(newVal)
-	return nil
+	if h.device == nil {
+		return fmt.Errorf("no device created")
+	}
+
+	return h.device.Feature(feature).Update(newVal)
 }
 
 func (h *HemtjanstDevice) onTradfriChange(change []*tradfri.ObservedChange) {

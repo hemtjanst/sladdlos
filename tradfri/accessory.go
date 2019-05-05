@@ -2,10 +2,10 @@ package tradfri
 
 import (
 	"encoding/json"
+	"image/color"
 	"log"
 	"strconv"
 	"time"
-	"image/color"
 )
 
 type Accessory struct {
@@ -29,6 +29,17 @@ func (a *Accessory) IsLight() bool {
 
 func (a *Accessory) IsRemote() bool {
 	return a.Type == TypeRemote
+}
+
+func (a *Accessory) IsPlug() bool {
+	return a.Type == TypePlug
+}
+
+func (a *Accessory) Plug() *Plug {
+	if len(a.Plugs) > 0 {
+		return a.Plugs[0]
+	}
+	return nil
 }
 
 func (a *Accessory) Light() *Light {
@@ -76,6 +87,36 @@ func (a *Accessory) update(cb func(ch *Accessory)) {
 	cb(a.pendingChanges)
 }
 
+func (a *Accessory) updateDimmable(cb func(ch *Dimmable)) {
+	a.update(func(ch *Accessory) {
+		var l *Dimmable
+		if ch.IsLight() {
+			l = &ch.Light().Dimmable
+		} else {
+			li := &Light{}
+			ch.Lights = []*Light{li}
+			l = &li.Dimmable
+		}
+		cb(l)
+	})
+}
+
+func (a *Accessory) updateOnOff(cb func(ch *OnOff)) {
+	a.update(func(ch *Accessory) {
+		var l *OnOff
+		if ch.IsLight() {
+			l = &ch.Light().OnOff
+		} else if ch.IsPlug() {
+			l = &ch.Plug().OnOff
+		} else {
+			li := &Light{}
+			ch.Lights = []*Light{li}
+			l = &li.OnOff
+		}
+		cb(l)
+	})
+}
+
 func (a *Accessory) updateLight(cb func(ch *Light)) {
 	a.update(func(ch *Accessory) {
 		l := ch.Light()
@@ -92,7 +133,7 @@ func (a *Accessory) SetOn(on bool) {
 		return
 	}
 	newVal := ToYesNo(on)
-	a.updateLight(func(ch *Light) {
+	a.updateOnOff(func(ch *OnOff) {
 		ch.On = &newVal
 	})
 }
@@ -102,7 +143,7 @@ func (a *Accessory) SetDim(dim int) {
 		return
 	}
 	newVal := calcDim(dim)
-	a.updateLight(func(ch *Light) {
+	a.updateDimmable(func(ch *Dimmable) {
 		ch.Dim = &newVal
 	})
 }

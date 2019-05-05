@@ -3,7 +3,7 @@ package tradfri
 import "math"
 
 type Dimmable struct {
-	On  *YesNo `json:"5850,omitempty"`
+	OnOff
 	Dim *uint8 `json:"5851,omitempty"`
 }
 
@@ -27,10 +27,6 @@ func (d *Dimmable) DimPercent() float64 {
 
 func (d *Dimmable) DimInt() int {
 	return int(d.DimPercent())
-}
-
-func (d *Dimmable) IsOn() bool {
-	return d.On != nil && *d.On == Yes
 }
 
 // Converts a percentage (0-100) into a value between 0 and 255

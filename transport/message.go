@@ -3,7 +3,6 @@ package transport
 import (
 	"encoding/json"
 	"fmt"
-	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/satori/go.uuid"
 	"log"
 	"time"
@@ -24,15 +23,16 @@ type tradfriReply struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-func (t *Transport) onReply(c mqtt.Client, msg mqtt.Message) {
+func (t *Transport) onReply(msg []byte) {
 	resp := &tradfriReply{}
-	err := json.Unmarshal(msg.Payload(), resp)
+	err := json.Unmarshal(msg, resp)
+	smsg := string(msg)
 	if err != nil {
-		log.Printf("Error in Trådfri reply %s: %v", msg.Topic(), string(msg.Payload()))
+		log.Printf("Error (%s) in Trådfri reply: %v", err, smsg)
 		return
 	}
 	if resp.ID == "" {
-		log.Printf("Trådfri reply %s, got empty ID: %s", msg.Topic(), string(msg.Payload()))
+		log.Printf("Trådfri reply: got empty ID -  %s", smsg)
 		return
 	}
 
@@ -41,7 +41,7 @@ func (t *Transport) onReply(c mqtt.Client, msg mqtt.Message) {
 	t.RLock()
 	defer t.RUnlock()
 	if ch, ok = t.waiting[resp.ID]; !ok {
-		log.Printf("Trådfri reply %s, got reply for unknown ID: %s", msg.Topic(), string(msg.Payload()))
+		log.Printf("Trådfri reply: got reply for unknown ID - %s", smsg)
 		return
 	}
 	go func() {
@@ -80,17 +80,13 @@ func (t *Transport) makeReq(method, uri string, payload []byte) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	tok := t.client.Publish("tradfri-cmd", 0, false, js)
-
-	if tok.Wait(); tok.Error() != nil {
-		return nil, tok.Error()
-	}
+	t.client.Publish("tradfri-cmd", js, false)
 
 	select {
 	case r := <-ch:
 		return r.Payload, nil
 	case <-time.After(10 * time.Second):
-		return nil, fmt.Errorf("Timeout after 10 seconds")
+		return nil, fmt.Errorf("timeout after 10 seconds")
 	}
 }
 
