@@ -1,27 +1,20 @@
 package sladdlos
 
 import (
-	"github.com/hemtjanst/hemtjanst/messaging"
-	"github.com/hemtjanst/sladdlos/tradfri"
-	//"log"
+	"context"
+	"hemtjan.st/sladdlos/tradfri"
+	"lib.hemtjan.st/device"
 	"strconv"
 	"sync"
-	//"time"
-)
-
-const (
-	colorCold   = 90
-	colorNormal = 200
-	colorWarm   = 400
 )
 
 type HemtjanstClient struct {
 	sync.RWMutex
-	MQTT         messaging.PublishSubscriber
 	Id           string
 	Announce     bool
 	SkipGroup    bool
 	SkipBulb     bool
+	transport    device.Transport
 	tree         *tradfri.Tree
 	devices      map[string]*HemtjanstDevice
 	groups       map[int]*tradfri.Group
@@ -30,9 +23,10 @@ type HemtjanstClient struct {
 	newGroupChan chan *tradfri.Group
 }
 
-func NewHemtjanstClient(tree *tradfri.Tree, id string) *HemtjanstClient {
+func NewHemtjanstClient(tree *tradfri.Tree, transport device.Transport, id string) *HemtjanstClient {
 	h := &HemtjanstClient{
 		tree:         tree,
+		transport:    transport,
 		Id:           id,
 		SkipBulb:     false,
 		SkipGroup:    false,
@@ -50,11 +44,17 @@ func topicFor(t string, a tradfri.Instance) string {
 	return "light/" + t + "-" + strconv.Itoa(a.GetInstanceID())
 }
 
-func (h *HemtjanstClient) start() {
-	//tick := time.NewTicker(5 * time.Second)
+func topicForPlug(t string, a tradfri.Instance) string {
+	return "outlet/" + t + "-" + strconv.Itoa(a.GetInstanceID())
+}
+
+func (h *HemtjanstClient) Start(ctx context.Context) {
 	for {
 		select {
-		case d := <-h.newDevChan:
+		case d, op := <-h.newDevChan:
+			if !op {
+				return
+			}
 			go func(d *tradfri.Accessory) {
 				h.Lock()
 				defer h.Unlock()
@@ -63,7 +63,10 @@ func (h *HemtjanstClient) start() {
 				}
 				h.ensureDevices()
 			}(d)
-		case g := <-h.newGroupChan:
+		case g, op := <-h.newGroupChan:
+			if !op {
+				return
+			}
 			go func(g *tradfri.Group) {
 				h.Lock()
 				defer h.Unlock()
@@ -72,14 +75,8 @@ func (h *HemtjanstClient) start() {
 				}
 				h.ensureDevices()
 			}(g)
-			/*case <-tick.C:
-			log.Print("Tick")
-			go func() {
-				h.Lock()
-				defer h.Unlock()
-				log.Print("ensureDevices")
-				h.ensureDevices()
-			}()*/
+		case <-ctx.Done():
+			return
 		}
 	}
 }
@@ -89,6 +86,7 @@ func (h *HemtjanstClient) ensureDevices() {
 
 	for _, grp := range h.groups {
 		hasLight := false
+		hasPlug := false
 		if grp.Members != nil {
 			for _, member := range grp.Members {
 				ownerGroup[member] = grp.GetInstanceID()
@@ -96,12 +94,19 @@ func (h *HemtjanstClient) ensureDevices() {
 					if l.IsLight() {
 						hasLight = true
 					}
+					if l.IsPlug() {
+						hasPlug = true
+					}
 				}
 			}
 		}
 
-		topic := topicFor("grp", grp)
-		if !hasLight {
+		var topic string
+		if hasLight {
+			topic = topicFor("grp", grp)
+		} else if hasPlug {
+			topic = topicForPlug("grp", grp)
+		} else {
 			continue
 		}
 		if _, ok := h.devices[topic]; ok {
@@ -113,26 +118,31 @@ func (h *HemtjanstClient) ensureDevices() {
 
 	for _, light := range h.accessories {
 		topic := topicFor("bulb", light)
+		if light.IsPlug() {
+			topic = topicForPlug("plug", light)
+		}
+
 		if _, ok := h.devices[topic]; ok {
 			continue
 		}
 		var owner *tradfri.Group
 		if grpId, ok := ownerGroup[light.GetInstanceID()]; ok {
 			if owner, ok = h.groups[grpId]; !ok {
-				//log.Printf("[%s] Owner group not initialized, continuing", topic)
 				continue
 			}
 		} else {
 			// Wait until we have the group
-			//log.Printf("[%s] Owner group not found yet, continuing", topic)
 			continue
 		}
 		ownerTopic := topicFor("grp", owner)
 		var ownerDev *HemtjanstDevice
 		var ok bool
 		if ownerDev, ok = h.devices[ownerTopic]; !ok {
-			//log.Printf("[%s] Owner group not found as %s", topic, ownerTopic)
-			continue
+			// Try with outlet topic
+			ownerTopic = topicForPlug("grp", owner)
+			if ownerDev, ok = h.devices[ownerTopic]; !ok {
+				continue
+			}
 		}
 
 		dev := NewHemtjanstAccessory(h, topic, light, ownerDev)
@@ -140,30 +150,6 @@ func (h *HemtjanstClient) ensureDevices() {
 		ownerDev.AddMember(dev)
 	}
 
-}
-
-func (h *HemtjanstClient) OnConnect(client messaging.PublishSubscriber) {
-	go func() {
-		if h.MQTT == nil {
-			h.MQTT = client
-			go h.start()
-		}
-		h.MQTT.Subscribe("discover", 1, h.onDiscover)
-		for _, d := range h.devices {
-			d.OnConnect()
-		}
-	}()
-}
-
-func (h *HemtjanstClient) onDiscover(message messaging.Message) {
-	h.Announce = true
-	go func() {
-		h.RLock()
-		defer h.RUnlock()
-		for _, d := range h.devices {
-			d.OnDiscover()
-		}
-	}()
 }
 
 func (h *HemtjanstClient) OnNewAccessory(d *tradfri.Accessory) {

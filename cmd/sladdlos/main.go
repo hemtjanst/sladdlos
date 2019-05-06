@@ -1,17 +1,20 @@
 package main
 
 import (
+	"context"
 	"flag"
-	"github.com/eclipse/paho.mqtt.golang"
-	"github.com/hemtjanst/hemtjanst/messaging"
-	"github.com/hemtjanst/hemtjanst/messaging/flagmqtt"
-	"github.com/hemtjanst/sladdlos"
-	"github.com/hemtjanst/sladdlos/tradfri"
-	"github.com/hemtjanst/sladdlos/transport"
-	"html/template"
+	"github.com/satori/go.uuid"
+	"hemtjan.st/sladdlos"
+	"hemtjan.st/sladdlos/tradfri"
+	"hemtjan.st/sladdlos/transport"
+	"lib.hemtjan.st/client"
+	"lib.hemtjan.st/server"
+	"lib.hemtjan.st/transport/mqtt"
 	"log"
-	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -23,10 +26,21 @@ var (
 )
 
 func main() {
+
+	mCfg := mqtt.MustFlags(flag.String, flag.Bool)
+
 	flag.Parse()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mq, err := mqtt.New(ctx, mCfg())
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	if *cleanUpHemtjanst || *cleanUpTradfri {
-		clean()
+		clean(mq, ctx, cancel)
 		return
 	}
 
@@ -35,13 +49,21 @@ func main() {
 		return
 	}
 
-	id := flagmqtt.NewUniqueIdentifier()
+	go func() {
+		quit := make(chan os.Signal)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	tr := transport.NewTransport(id)
+		<-quit
+		cancel()
+	}()
+
+	id := uuid.NewV4().String()
+
+	tr := transport.NewTransport(mq, id)
 	tree := tradfri.NewTree(tr)
 	tr.SetTree(tree)
 
-	ht := sladdlos.NewHemtjanstClient(tree, id)
+	ht := sladdlos.NewHemtjanstClient(tree, mq, id)
 
 	ht.SkipGroup = *skipGroup
 	if ht.SkipGroup {
@@ -52,112 +74,53 @@ func main() {
 		log.Print("Skipping bulbs")
 	}
 
-	var messenger messaging.PublishSubscriber
+	ht.Start(ctx)
 
-	mqClient, err := flagmqtt.NewPersistentMqtt(flagmqtt.ClientConfig{
-		WillTopic:   "leave",
-		WillPayload: id,
-		WillRetain:  false,
-		WillQoS:     1,
-		ClientID:    "sladdlos-" + id,
-		OnConnectHandler: func(client mqtt.Client) {
-			if messenger == nil {
-				messenger = messaging.NewMQTTMessenger(client)
-			}
-			tr.OnConnect(client)
-			ht.OnConnect(messenger)
-		},
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Print("Connecting to MQTT")
-	token := mqClient.Connect()
-	token.Wait()
-	if token.Error() != nil {
-		log.Fatal(err)
-	}
-	log.Print("Connected")
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		f := "index.tmpl"
-		fm := template.FuncMap{
-			"GetDevice": func(aId int) *tradfri.Accessory {
-				if dev, ok := tree.Devices[aId]; ok {
-					return dev
-				}
-				return nil
-			},
-		}
-		t, err := template.New(f).
-			Funcs(fm).
-			ParseFiles("./templates/" + f)
-		if err != nil {
-			log.Print(err)
-		}
-		t.Execute(w, tree)
-	})
-	h := &http.Server{
-		Addr:              ":7995",
-		Handler:           mux,
-		ReadTimeout:       10 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       30 * time.Second,
-	}
-
-	log.Fatal(h.ListenAndServe())
+	<-ctx.Done()
 }
 
-func clean() {
-	exit := make(chan bool)
-	id := flagmqtt.NewUniqueIdentifier()
-	mqClient, err := flagmqtt.NewPersistentMqtt(flagmqtt.ClientConfig{
-		ClientID: "sladdlos-cleaner-" + id,
-		OnConnectHandler: func(client mqtt.Client) {
-
-		},
-	})
-
-	log.Print("Connecting to MQTT")
-	token := mqClient.Connect()
-	token.Wait()
-	if token.Error() != nil {
-		log.Fatal(err)
-	}
-	log.Print("Connected")
+func clean(tr mqtt.MQTT, ctx context.Context, cancel func()) {
+	time.AfterFunc(10*time.Second, cancel)
 
 	if *cleanUpTradfri {
-		mqClient.Subscribe("tradfri-raw/#", 1, func(client mqtt.Client, message mqtt.Message) {
-			if message.Retained() {
-				log.Printf("Deleting contents of topic %s", message.Topic())
-				client.Publish(message.Topic(), 1, true, []byte{})
+		rawch := tr.SubscribeRaw("tradfri-raw/#")
+
+		for {
+			m, open := <-rawch
+			if !open {
+				return
 			}
-		})
+			if m.IsRetain {
+				log.Printf("Deleting contents of topic %s", m.TopicName)
+				tr.Publish(m.TopicName, []byte{}, true)
+			}
+
+		}
 	}
 
 	if *cleanUpHemtjanst {
-		mqClient.Subscribe("announce/light/+", 1, func(client mqtt.Client, message mqtt.Message) {
-			if message.Retained() {
-				sp := strings.Split(message.Topic(), "/")
-				if len(sp) == 3 && strings.Index(sp[2], "grp-") == 0 || strings.Index(sp[2], "bulb-") == 0 {
-					log.Printf("Deleting contents of topic %s", message.Topic())
-					client.Publish(message.Topic(), 1, true, []byte{})
+
+		srv := server.New(tr)
+		ch := make(chan server.Update, 5)
+		srv.SetUpdateChannel(ch)
+		go func() {
+			for {
+				ev, open := <-ch
+				if !open {
+					return
 				}
-			}
-		})
-		mqClient.Subscribe("light/+/+/get", 1, func(client mqtt.Client, message mqtt.Message) {
-			if message.Retained() {
-				sp := strings.Split(message.Topic(), "/")
-				if len(sp) == 4 && strings.Index(sp[1], "grp-") == 0 || strings.Index(sp[1], "bulb-") == 0 {
-					log.Printf("Deleting contents of topic %s", message.Topic())
-					client.Publish(message.Topic(), 1, true, []byte{})
+				if ev.Type != server.AddedDevice {
+					continue
 				}
+				sp := strings.Split(ev.Device.Id(), "/")
+				if len(sp) == 2 && (strings.Index(sp[1], "grp-") == 0 || strings.Index(sp[1], "bulb-") == 0) {
+					log.Printf("Deleting device %s", ev.Device.Id())
+					_ = client.DeleteDevice(ev.Device.Info(), tr)
+				}
+
 			}
-		})
+		}()
+		_ = srv.Start(ctx)
 	}
 
-	<-exit
 }

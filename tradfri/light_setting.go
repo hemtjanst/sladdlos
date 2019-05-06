@@ -51,7 +51,7 @@ func (l *LightSetting) SetColor(color color.Color) {
 	var c colorful.Color
 	var ok bool
 	if c, ok = color.(colorful.Color); !ok {
-		c = colorful.MakeColor(color)
+		c, _ = colorful.MakeColor(color)
 	}
 	h, s, _ := c.Hsv()
 	l.Hue = int(h*(65535/360) + 0.5)

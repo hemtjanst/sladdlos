@@ -77,13 +77,17 @@ func (t *Tree) Populate(path []string, data []byte) error {
 		return nil
 	}
 
-	if len(path) == 1 {
-		return fmt.Errorf("Got data at unknown endpoint %s: %s", uri, string(data))
+	if uri == ".well-known/core" {
+		return nil
+	}
+
+	if len(path) <= 1 {
+		return fmt.Errorf("got data at unknown endpoint %s: %s", uri, string(data))
 	}
 
 	id, err := strconv.Atoi(path[1])
 	if err != nil {
-		return fmt.Errorf("Expected int as second param, got %s", path[1])
+		return fmt.Errorf("expected int as second param, got %s", path[1])
 	}
 
 	var ok bool
@@ -127,7 +131,7 @@ func (t *Tree) Populate(path []string, data []byte) error {
 		if len(path) == 3 {
 			sceneId, err := strconv.Atoi(path[2])
 			if err != nil {
-				return fmt.Errorf("Expected int as third param, got %s", path[2])
+				return fmt.Errorf("expected int as third param, got %s", path[2])
 			}
 			var grp *Group
 			if grp, ok = t.Groups[id]; !ok {
@@ -157,6 +161,6 @@ func (t *Tree) Populate(path []string, data []byte) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("Got data at unknown endpoint %s: %s", uri, string(data))
+		return fmt.Errorf("got data at unknown endpoint %s: %s", uri, string(data))
 	}
 }

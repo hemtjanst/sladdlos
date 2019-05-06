@@ -10,8 +10,10 @@ type YesNo uint8
 type UpdatePriority uint8
 
 const (
+	TypeGroup                       = 255
 	TypeRemote       DeviceType     = 0
 	TypeLight        DeviceType     = 2
+	TypePlug         DeviceType     = 3
 	TypeMotionSensor DeviceType     = 4
 	No               YesNo          = 0
 	Yes              YesNo          = 1
