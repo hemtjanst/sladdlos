@@ -288,6 +288,7 @@ func (h *HemtjanstDevice) onDeviceSet(feature string, newValue string) {
 					h.blind = &blindInfo{direction: blindStopped}
 				}
 				h.blind.targetPosition = &pos
+				h.publish("targetPosition")
 			}
 		}
 	}
@@ -499,7 +500,6 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 		return "1", nil
 	case "currentPosition":
 		if bl := h.accessory.Blind(); bl != nil {
-			log.Printf("currentPosition reported as %d", 100-bl.Pos())
 			return strconv.Itoa(100 - bl.Pos()), nil
 		}
 	case "targetPosition":
@@ -514,12 +514,10 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 					r = 100
 				}
 			}
-			log.Printf("targetPosition reported as %d", r)
 			return strconv.Itoa(r), nil
 		}
 	case "positionState":
 		if h.blind != nil {
-			log.Printf("positionState reported as %d", h.blind.direction)
 			return strconv.Itoa(int(h.blind.direction)), nil
 		}
 	}
