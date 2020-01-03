@@ -9,9 +9,11 @@ import (
 	"lib.hemtjan.st/feature"
 	"log"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -33,7 +35,22 @@ type HemtjanstDevice struct {
 	features       map[string]client.Feature
 	lastHue        *int
 	lastSaturation *int
+	blind          *blindInfo
 }
+type blindInfo struct {
+	sync.RWMutex
+	lastPosition   *int
+	targetPosition *int
+	direction      blindDirection
+	timer          *time.Timer
+}
+type blindDirection int
+
+const (
+	blindClosing blindDirection = 0
+	blindOpening blindDirection = 1
+	blindStopped blindDirection = 2
+)
 
 func NewHemtjanstAccessory(client *HemtjanstClient, topic string, accessory *tradfri.Accessory, group *HemtjanstDevice) *HemtjanstDevice {
 	h := &HemtjanstDevice{
@@ -41,8 +58,10 @@ func NewHemtjanstAccessory(client *HemtjanstClient, topic string, accessory *tra
 		client:    client,
 		isRunning: false,
 		isGroup:   false,
-		members:   []*HemtjanstDevice{group},
 		accessory: accessory,
+	}
+	if group != nil {
+		h.members = []*HemtjanstDevice{group}
 	}
 	h.init()
 	return h
@@ -62,7 +81,7 @@ func NewHemtjanstGroup(client *HemtjanstClient, topic string, group *tradfri.Gro
 
 func (h *HemtjanstDevice) shouldSkip() bool {
 	return h.isGroup && h.client.SkipGroup ||
-		!h.isGroup && h.client.SkipBulb
+		!h.isGroup && h.accessory.IsLight() && h.client.SkipBulb
 }
 
 func (h *HemtjanstDevice) AddMember(member *HemtjanstDevice) {
@@ -103,16 +122,12 @@ func (h *HemtjanstDevice) init() {
 		}
 
 		hasLight := false
-		hasPlug := false
 
 		for _, d := range h.members {
 			if d.accessory != nil {
 				if d.accessory.IsLight() {
 					hasLight = true
 				} else {
-					if d.accessory.IsPlug() {
-						hasPlug = true
-					}
 					continue
 				}
 				if l := d.accessory.Light(); l != nil {
@@ -131,14 +146,9 @@ func (h *HemtjanstDevice) init() {
 			dev.Type = "lightbulb"
 			dev.Features["on"] = &feature.Info{}
 			dev.Features["brightness"] = &feature.Info{}
-		} else if hasPlug {
-			dev.Type = "outlet"
-			dev.Features["on"] = &feature.Info{}
-			dev.Features["outletInUse"] = &feature.Info{}
 		}
-
 	} else {
-		if h.members == nil || h.accessory == nil || len(h.members) == 0 {
+		if h.accessory == nil || len(h.members) == 0 {
 			return
 		}
 		owner := h.members[0]
@@ -168,6 +178,12 @@ func (h *HemtjanstDevice) init() {
 			dev.Type = "outlet"
 			dev.Features["on"] = &feature.Info{}
 			dev.Features["outletInUse"] = &feature.Info{}
+		} else if h.accessory.IsBlind() {
+			h.blind = &blindInfo{direction: blindStopped}
+			dev.Type = "windowCovering"
+			dev.Features["targetPosition"] = &feature.Info{Min: 0, Max: 100, Step: 1}
+			dev.Features["currentPosition"] = &feature.Info{Min: 0, Max: 100, Step: 1}
+			dev.Features["positionState"] = &feature.Info{Min: 0, Max: 2, Step: 1}
 		}
 	}
 
@@ -260,6 +276,19 @@ func (h *HemtjanstDevice) onDeviceSet(feature string, newValue string) {
 		if saturation, err := strconv.Atoi(newValue); err == nil {
 			h.lastSaturation = &saturation
 			h.updateColor("")
+		}
+	case "targetPosition":
+		if pos, err := strconv.Atoi(newValue); err == nil && pos >= 0 && pos <= 100 {
+			if h.isGroup && h.group != nil {
+				// Not supported
+			} else if h.accessory != nil && h.accessory.IsBlind() {
+				pos = 100 - pos
+				h.accessory.SetBlindPosition(pos)
+				if h.blind == nil {
+					h.blind = &blindInfo{direction: blindStopped}
+				}
+				h.blind.targetPosition = &pos
+			}
 		}
 	}
 }
@@ -404,6 +433,8 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 		case "outletInUse":
 			// Currently no way of detecting
 			return "1", nil
+		case "currentPosition", "targetPosition", "positionState":
+			return "2", nil
 		}
 	}
 	switch feature {
@@ -466,6 +497,31 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 	case "outletInUse":
 		// Currently no way of detecting
 		return "1", nil
+	case "currentPosition":
+		if bl := h.accessory.Blind(); bl != nil {
+			log.Printf("currentPosition reported as %d", 100-bl.Pos())
+			return strconv.Itoa(100 - bl.Pos()), nil
+		}
+	case "targetPosition":
+		if bl := h.accessory.Blind(); bl != nil {
+			r := 100 - bl.Pos()
+			if h.blind != nil {
+				if h.blind.targetPosition != nil {
+					r = 100 - *h.blind.targetPosition
+				} else if h.blind.direction == blindOpening {
+					r = 0
+				} else if h.blind.direction == blindClosing {
+					r = 100
+				}
+			}
+			log.Printf("targetPosition reported as %d", r)
+			return strconv.Itoa(r), nil
+		}
+	case "positionState":
+		if h.blind != nil {
+			log.Printf("positionState reported as %d", h.blind.direction)
+			return strconv.Itoa(int(h.blind.direction)), nil
+		}
 	}
 	return "", fmt.Errorf("device doesn't support %s", feature)
 }
@@ -488,10 +544,17 @@ func (h *HemtjanstDevice) publish(feature string) error {
 	return h.device.Feature(feature).Update(newVal)
 }
 
+func unptr(i interface{}) interface{} {
+	if rf := reflect.ValueOf(i); !rf.IsNil() && rf.Type().Kind() == reflect.Ptr {
+		return rf.Elem().Interface()
+	}
+	return i
+}
+
 func (h *HemtjanstDevice) onTradfriChange(change []*tradfri.ObservedChange) {
 	colorUpdated := false
 	for _, ch := range change {
-		log.Printf("[%s] %s changed from %v to %v", h.Topic, ch.Field, ch.OldValue, ch.NewValue)
+		log.Printf("[%s] %s changed from %v to %v", h.Topic, ch.Field, unptr(ch.OldValue), unptr(ch.NewValue))
 		switch ch.Field {
 		case "Dim":
 			h.publish("brightness")
@@ -507,7 +570,79 @@ func (h *HemtjanstDevice) onTradfriChange(change []*tradfri.ObservedChange) {
 			}
 		case "Alive":
 			h.publish("reachable")
+		case "Position":
+			h.publish("currentPosition")
+			if h.blind != nil {
+				h.blind.onUpdate(h.accessory.Blind(), h.publish)
+			}
 		}
 
+	}
+}
+
+func (b *blindInfo) onUpdate(blind *tradfri.Blind, cb func(string) error) {
+	b.Lock()
+	defer b.Unlock()
+	pos := blind.Pos()
+	if b.lastPosition == nil {
+		b.lastPosition = &pos
+		b.direction = blindStopped
+		_ = cb("positionState")
+		_ = cb("targetPosition")
+	}
+	if b.timer == nil {
+		tmr := time.NewTimer(3 * time.Second)
+		b.timer = tmr
+		go func() {
+			<-tmr.C
+			b.Lock()
+			defer b.Unlock()
+			if b.timer != tmr {
+				return
+			}
+			b.timer = nil
+			b.direction = blindStopped
+			b.targetPosition = nil
+			go func() {
+				_ = cb("positionState")
+				_ = cb("targetPosition")
+			}()
+		}()
+		return
+	}
+	dir := b.direction
+	lastPos := *b.lastPosition
+	b.lastPosition = &pos
+	if lastPos < pos {
+		dir = blindClosing
+	} else if lastPos > pos {
+		dir = blindOpening
+	}
+	report := map[string]bool{}
+
+	if dir != b.direction {
+		b.direction = dir
+		report["positionState"] = true
+		report["targetPosition"] = true
+	}
+	if b.targetPosition != nil && *b.targetPosition == pos ||
+		(dir == blindClosing && pos == 100) ||
+		(dir == blindOpening && pos == 0) {
+		b.direction = blindStopped
+		b.targetPosition = nil
+		b.timer = nil
+		report["positionState"] = true
+		report["targetPosition"] = true
+	} else {
+		b.timer.Reset(1500 * time.Millisecond)
+	}
+	if len(report) > 0 {
+		go func() {
+			for k, r := range report {
+				if r {
+					_ = cb(k)
+				}
+			}
+		}()
 	}
 }

@@ -15,6 +15,7 @@ const (
 	TypeLight        DeviceType     = 2
 	TypePlug         DeviceType     = 3
 	TypeMotionSensor DeviceType     = 4
+	TypeBlind        DeviceType     = 7
 	No               YesNo          = 0
 	Yes              YesNo          = 1
 	PrioNormal       UpdatePriority = 0

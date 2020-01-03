@@ -5,6 +5,7 @@ import (
 	"hemtjan.st/sladdlos/tradfri"
 	"lib.hemtjan.st/device"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -40,12 +41,8 @@ func NewHemtjanstClient(tree *tradfri.Tree, transport device.Transport, id strin
 	return h
 }
 
-func topicFor(t string, a tradfri.Instance) string {
-	return "light/" + t + "-" + strconv.Itoa(a.GetInstanceID())
-}
-
-func topicForPlug(t string, a tradfri.Instance) string {
-	return "outlet/" + t + "-" + strconv.Itoa(a.GetInstanceID())
+func topicFor(a tradfri.Instance, t ...string) string {
+	return strings.Join(t, "/") + "-" + strconv.Itoa(a.GetInstanceID())
 }
 
 func (h *HemtjanstClient) Start(ctx context.Context) {
@@ -85,48 +82,41 @@ func (h *HemtjanstClient) ensureDevices() {
 	ownerGroup := map[int]int{}
 
 	for _, grp := range h.groups {
-		hasLight := false
-		hasPlug := false
-		if grp.Members != nil {
-			for _, member := range grp.Members {
-				ownerGroup[member] = grp.GetInstanceID()
-				if l, ok := h.accessories[member]; ok {
-					if l.IsLight() {
-						hasLight = true
-					}
-					if l.IsPlug() {
-						hasPlug = true
-					}
-				}
-			}
-		}
-
-		var topic string
-		if hasLight {
-			topic = topicFor("grp", grp)
-		} else if hasPlug {
-			topic = topicForPlug("grp", grp)
-		} else {
-			continue
-		}
+		topic := topicFor(grp, "light", "grp")
 		if _, ok := h.devices[topic]; ok {
 			continue
 		}
 		dev := NewHemtjanstGroup(h, topic, grp)
 		h.devices[topic] = dev
+
+		if grp.Members != nil {
+			for _, member := range grp.Members {
+				ownerGroup[member] = grp.GetInstanceID()
+			}
+		}
 	}
 
-	for _, light := range h.accessories {
-		topic := topicFor("bulb", light)
-		if light.IsPlug() {
-			topic = topicForPlug("plug", light)
+	for _, accessory := range h.accessories {
+		var topic string
+		if accessory.IsLight() {
+			topic = topicFor(accessory, "light", "bulb")
+		} else if accessory.IsPlug() {
+			topic = topicFor(accessory, "outlet", "plug")
+		} else if accessory.IsBlind() {
+			topic = topicFor(accessory, "windowCovering", "blind")
+		} else if accessory.IsRemote() {
+			topic = topicFor(accessory, "remote", "remote")
+		} else {
+			topic = topicFor(accessory, "unknown", "unknown")
 		}
 
 		if _, ok := h.devices[topic]; ok {
 			continue
 		}
+		var ownerDev *HemtjanstDevice
+
 		var owner *tradfri.Group
-		if grpId, ok := ownerGroup[light.GetInstanceID()]; ok {
+		if grpId, ok := ownerGroup[accessory.GetInstanceID()]; ok {
 			if owner, ok = h.groups[grpId]; !ok {
 				continue
 			}
@@ -134,20 +124,17 @@ func (h *HemtjanstClient) ensureDevices() {
 			// Wait until we have the group
 			continue
 		}
-		ownerTopic := topicFor("grp", owner)
-		var ownerDev *HemtjanstDevice
+		ownerTopic := topicFor(owner, "light", "grp")
 		var ok bool
 		if ownerDev, ok = h.devices[ownerTopic]; !ok {
-			// Try with outlet topic
-			ownerTopic = topicForPlug("grp", owner)
-			if ownerDev, ok = h.devices[ownerTopic]; !ok {
-				continue
-			}
+			continue
 		}
 
-		dev := NewHemtjanstAccessory(h, topic, light, ownerDev)
+		dev := NewHemtjanstAccessory(h, topic, accessory, ownerDev)
 		h.devices[topic] = dev
-		ownerDev.AddMember(dev)
+		if ownerDev != nil {
+			ownerDev.AddMember(dev)
+		}
 	}
 
 }

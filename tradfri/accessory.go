@@ -20,6 +20,7 @@ type Accessory struct {
 	Plugs      []*Plug     `json:"3312,omitempty"`
 	Sensors    []*Sensor   `json:"3300,omitempty"`
 	Switches   []*Switch   `json:"15009,omitempty"`
+	Blinds     []*Blind    `json:"15015,omitempty"`
 	OTAUpdate  YesNo       `json:"9054,omitempty"`
 }
 
@@ -35,7 +36,14 @@ func (a *Accessory) IsPlug() bool {
 	return a.Type == TypePlug
 }
 
+func (a *Accessory) IsBlind() bool {
+	return a.Type == TypeBlind
+}
+
 func (a *Accessory) Plug() *Plug {
+	if a == nil {
+		return nil
+	}
 	if len(a.Plugs) > 0 {
 		return a.Plugs[0]
 	}
@@ -43,8 +51,21 @@ func (a *Accessory) Plug() *Plug {
 }
 
 func (a *Accessory) Light() *Light {
+	if a == nil {
+		return nil
+	}
 	if len(a.Lights) > 0 {
 		return a.Lights[0]
+	}
+	return nil
+}
+
+func (a *Accessory) Blind() *Blind {
+	if a == nil {
+		return nil
+	}
+	if len(a.Blinds) > 0 {
+		return a.Blinds[0]
 	}
 	return nil
 }
@@ -128,6 +149,17 @@ func (a *Accessory) updateLight(cb func(ch *Light)) {
 	})
 }
 
+func (a *Accessory) updateBlind(cb func(ch *Blind)) {
+	a.update(func(ch *Accessory) {
+		b := ch.Blind()
+		if b == nil {
+			b = &Blind{}
+			ch.Blinds = []*Blind{b}
+		}
+		cb(b)
+	})
+}
+
 func (a *Accessory) SetOn(on bool) {
 	if !a.IsLight() {
 		return
@@ -169,6 +201,15 @@ func (a *Accessory) SetColorTemp(c string) {
 	}
 	a.updateLight(func(ch *Light) {
 		ch.SetColorTemp(c)
+	})
+}
+
+func (a *Accessory) SetBlindPosition(pos int) {
+	if !a.IsBlind() {
+		return
+	}
+	a.updateBlind(func(ch *Blind) {
+		ch.Position = &pos
 	})
 }
 
