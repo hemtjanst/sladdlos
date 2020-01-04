@@ -41,9 +41,6 @@ func (a *Accessory) IsBlind() bool {
 }
 
 func (a *Accessory) Plug() *Plug {
-	if a == nil {
-		return nil
-	}
 	if len(a.Plugs) > 0 {
 		return a.Plugs[0]
 	}
@@ -51,9 +48,6 @@ func (a *Accessory) Plug() *Plug {
 }
 
 func (a *Accessory) Light() *Light {
-	if a == nil {
-		return nil
-	}
 	if len(a.Lights) > 0 {
 		return a.Lights[0]
 	}
@@ -61,9 +55,6 @@ func (a *Accessory) Light() *Light {
 }
 
 func (a *Accessory) Blind() *Blind {
-	if a == nil {
-		return nil
-	}
 	if len(a.Blinds) > 0 {
 		return a.Blinds[0]
 	}

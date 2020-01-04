@@ -142,11 +142,12 @@ func (h *HemtjanstDevice) init() {
 			}
 		}
 
-		if hasLight {
-			dev.Type = "lightbulb"
-			dev.Features["on"] = &feature.Info{}
-			dev.Features["brightness"] = &feature.Info{}
+		if !hasLight {
+			return
 		}
+		dev.Type = "lightbulb"
+		dev.Features["on"] = &feature.Info{}
+		dev.Features["brightness"] = &feature.Info{}
 	} else {
 		if h.accessory == nil || len(h.members) == 0 {
 			return
@@ -207,6 +208,7 @@ func (h *HemtjanstDevice) init() {
 		h.device, err = client.NewDevice(dev, h.client.transport)
 		if err != nil {
 			log.Printf("Error creating device: %s", err)
+			return
 		}
 		for _, ft := range h.device.Features() {
 			ft := ft
@@ -286,9 +288,12 @@ func (h *HemtjanstDevice) onDeviceSet(feature string, newValue string) {
 				h.accessory.SetBlindPosition(pos)
 				if h.blind == nil {
 					h.blind = &blindInfo{direction: blindStopped}
+					h.blind.onUpdate(h.accessory.Blind(), h.publish)
 				}
 				h.blind.targetPosition = &pos
-				h.publish("targetPosition")
+				if err := h.publish("targetPosition"); err != nil {
+					log.Printf("Error publishing targetPosition: %v", err)
+				}
 			}
 		}
 	}
@@ -502,6 +507,7 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 		if bl := h.accessory.Blind(); bl != nil {
 			return strconv.Itoa(100 - bl.Pos()), nil
 		}
+		return "", fmt.Errorf("accessory is not a blind: %#v", *h.accessory)
 	case "targetPosition":
 		if bl := h.accessory.Blind(); bl != nil {
 			r := 100 - bl.Pos()
@@ -516,6 +522,7 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 			}
 			return strconv.Itoa(r), nil
 		}
+		return "", fmt.Errorf("accessory is not a blind: %#v", *h.accessory)
 	case "positionState":
 		if h.blind != nil {
 			return strconv.Itoa(int(h.blind.direction)), nil
@@ -526,7 +533,7 @@ func (h *HemtjanstDevice) featureVal(feature string) (string, error) {
 
 func (h *HemtjanstDevice) publish(feature string) error {
 	var err error
-	if !h.isGroup && len(h.members) == 1 {
+	if !h.isGroup && h.accessory.IsLight() && len(h.members) == 1 {
 		if err := h.members[0].publish(feature); err != nil {
 			return err
 		}
@@ -634,13 +641,9 @@ func (b *blindInfo) onUpdate(blind *tradfri.Blind, cb func(string) error) {
 	} else {
 		b.timer.Reset(1500 * time.Millisecond)
 	}
-	if len(report) > 0 {
-		go func() {
-			for k, r := range report {
-				if r {
-					_ = cb(k)
-				}
-			}
-		}()
+	for k := range report {
+		if err := cb(k); err != nil {
+			log.Printf("Trying to update %s: %v", k, err)
+		}
 	}
 }
